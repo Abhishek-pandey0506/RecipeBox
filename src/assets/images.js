@@ -1,0 +1,16 @@
+export const Images = {
+    logo: require('./image/logo.png'),
+    firstImage: require('./image/Designer.png'),
+    Burger: require('./image/Burger.jpg'),
+    Pizza: require('./image/pizza.png'),
+    Sweet: require('./image/sweet.jpg'),
+    Sweet2: require('./image/Sweet2.jpg'),
+    Juice: require('./image/juice.jpeg'),
+    Food1: require('./image/food1.jpg'),
+    Food2: require('./image/food2.jpg'),
+    Food3: require('./image/food3.jpg'),
+    Food4: require('./image/food4.jpg'),
+    Food5: require('./image/food5.jpg'),
+    Food6: require('./image/food6.jpg'),
+    Indianfood: require('./image/indian.webp'),
+  };
