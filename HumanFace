@@ -1,0 +1,272 @@
+import React, { useState, useEffect, useRef } from 'react'
+import {
+  View,
+  StyleSheet,
+  Alert,
+  Pressable,
+  Platform,
+  Linking,
+} from 'react-native'
+import { Text } from 'react-native-gesture-handler'
+import { Camera, useCameraDevices, useFrameProcessor } from 'react-native-vision-camera'
+import { scanFaces, Face } from 'vision-camera-face-detector'
+import { runOnJS } from 'react-native-reanimated'
+import Svg, { Rect, Mask, Path } from 'react-native-svg'
+import NavigationService from '../navigation/NavigationService'
+import CustomPostHeader from './CustomPostHeader'
+import CustomIcon, { ICON_TYPE } from './CustomIcon'
+import { colors } from '../resources/colors'
+import {
+  width,
+  height,
+  moderateScale,
+} from '../helper/responsiveSize'
+
+/** 
+ * Constants for the overlay shape (same as your original OvalOverlay)
+ */
+const scaleX = (width * 0.9) / 200
+const scaleY = (height * 0.5) / 199
+const centerX = width / 2
+const centerY = height / 1.4
+
+const overlayPath = `
+  M ${centerX - 100 * scaleX},${centerY - 120 * scaleY}
+  a ${100 * scaleX},${100 * scaleY} 0 1,0 ${200 * scaleX},0
+  a ${100 * scaleX},${100 * scaleY} 0 1,0 -${200 * scaleX},0
+  M ${centerX - 140 * scaleX},${centerY + 40 * scaleY}
+  c 0,${200 * scaleY} ${280 * scaleX},${200 * scaleY} ${280 * scaleX},0
+  c -${20 * scaleX},-${40 * scaleY} -${40 * scaleX},-${80 * scaleY} -${
+  140 * scaleX
+},-${80 * scaleY}
+  c -${100 * scaleX},0 -${120 * scaleX},${40 * scaleY} -${140 * scaleX},${
+  80 * scaleY
+}
+  z
+`
+
+const OvalOverlay= () => (
+  <View style={StyleSheet.absoluteFill}>
+    <Svg width="100%" height="100%">
+      <Mask id="mask">
+        <Rect width="100%" height="100%" fill="white" />
+        <Path d={overlayPath} fill="black" />
+      </Mask>
+      <Rect
+        width="100%"
+        height="100%"
+        fill="black"
+        fillOpacity="0.6"
+        mask="url(#mask)"
+      />
+    </Svg>
+  </View>
+)
+
+
+export default function SelfieWithFrame({
+  setViewFrame,
+  setSelectedImage,
+  setImageData,
+  data,
+  editProfile = false,
+}) {
+  const [hasPermission, setHasPermission] = useState(false)
+  const [cameraKey, setCameraKey] = useState(0)
+  const [isFaceDetected, setIsFaceDetected] = useState(false)
+  const cameraRef = useRef<Camera>(null)
+  const devices = useCameraDevices()
+  const device = devices.front
+
+  // 1) Ask for camera permission via VisionCamera API
+  useEffect(() => {
+    ;(async () => {
+      const status = await Camera.requestCameraPermission()
+      if (status !== 'authorized') {
+        // show iOS / Android settings prompt
+        if (Platform.OS === 'ios') {
+          Alert.alert(
+            'Camera Permission Needed',
+            'Please enable camera access from settings to use this feature.',
+            [
+              { text: 'Back', style: 'destructive', onPress: () => NavigationService.goBack() },
+              { text: 'Enable', onPress: () => Linking.openURL('app-settings:') },
+            ]
+          )
+        } else {
+          Alert.alert(
+            'Camera Permission Needed',
+            'Please enable camera access in settings to use this feature.',
+            [{ text: 'Back', style: 'destructive', onPress: () => NavigationService.goBack() }]
+          )
+        }
+      } else {
+        // force re-mount so frameProcessor starts
+        setHasPermission(true)
+        setCameraKey(k => k + 1)
+      }
+    })()
+  }, [])
+
+  // 2) Frame Processor: detect & validate one full face inside our oval
+  const frameProcessor = useFrameProcessor((frame) => {
+    'worklet'
+    const faces = scanFaces(frame)
+    // require exactly one face
+    if (faces.length !== 1) {
+      runOnJS(setIsFaceDetected)(false)
+      return
+    }
+
+    const b = faces[0].bounds
+    // drop any obviously invalid MLKit/Vision coords
+    if (
+      b.width <= 0 ||
+      b.height <= 0 ||
+      b.x < 0 ||
+      b.y < 0 ||
+      b.x + b.width > frame.width ||
+      b.y + b.height > frame.height
+    ) {
+      runOnJS(setIsFaceDetected)(false)
+      return
+    }
+
+    // enforce a minimum size in raw pixels so it's really a full face
+    const MIN_FACE_PX = 100
+    if (b.width < MIN_FACE_PX || b.height < MIN_FACE_PX) {
+      runOnJS(setIsFaceDetected)(false)
+      return
+    }
+
+    // map from camera frame→view coords
+    const vx = (b.x * width) / frame.width
+    const vy = (b.y * height) / frame.height
+    const vw = (b.width * width) / frame.width
+    const vh = (b.height * height) / frame.height
+
+    // face center in view coords
+    const cx = vx + vw / 2
+    const cy = vy + vh / 2
+
+    // our overlay is an ellipse of radii rx,ry at centerX,centerY
+    const rx = 100 * scaleX
+    const ry = 100 * scaleY
+
+    // also ensure the face box itself isn’t huge (it must sit inside the ellipse)
+    if (vw > 2 * rx || vh > 2 * ry) {
+      runOnJS(setIsFaceDetected)(false)
+      return
+    }
+
+    // ellipse equation: (dx/rx)^2 + (dy/ry)^2 <= 1
+    const dx = cx - centerX
+    const dy = cy - centerY
+    if (dx * dx / (rx * rx) + dy * dy / (ry * ry) <= 1) {
+      runOnJS(setIsFaceDetected)(true)
+    } else {
+      runOnJS(setIsFaceDetected)(false)
+    }
+  }, [])
+
+  // 3) Photo capture
+  const takePhoto = async () => {
+    if (!cameraRef.current) return
+    const photo = await cameraRef.current.takePhoto({ flash: 'off', qualityPrioritization: 'quality' })
+    const uri = Platform.select({
+      android: `file://${photo.path}`,
+      ios: photo.path,
+    })
+    setSelectedImage(uri)
+
+    if (editProfile) {
+      setImageData(photo)
+      setViewFrame(false)
+    } else {
+      const ext = photo.path.split('.').pop()
+      const form = new FormData()
+      form.append('profile_image', {
+        uri,
+        type: `image/${ext}`,
+        name: `image.${ext}`,
+      })
+      form.append('user_id', data.id)
+      setImageData(form)
+      setViewFrame(false)
+    }
+  }
+
+  if (!device || !hasPermission) {
+    return <Text style={styles.centered}>Loading camera…</Text>
+  }
+
+  return (
+    <>
+      {editProfile && (
+        <View style={styles.header}>
+          <CustomPostHeader
+            leftIconPress={() => setViewFrame(false)}
+            leftIcon={
+              <CustomIcon
+                name="arrow-back"
+                origin={ICON_TYPE.IONICONS}
+                color={colors.headericon}
+                size={30}
+              />
+            }
+          />
+        </View>
+      )}
+
+      <View key={cameraKey} style={styles.container}>
+        <Camera
+          ref={cameraRef}
+          style={styles.camera}
+          device={device}
+          isActive
+          photo
+          frameProcessor={frameProcessor}
+          frameProcessorFps={5}
+        />
+
+        <OvalOverlay />
+
+        {isFaceDetected && (
+          <View style={styles.captureContainer}>
+            <Pressable onPress={takePhoto} style={styles.captureButton}>
+              <View style={styles.innerCircle} />
+            </Pressable>
+          </View>
+        )}
+      </View>
+    </>
+  )
+}
+
+const styles = StyleSheet.create({
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  header: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, elevation: 10, backgroundColor: colors.white },
+  container: { flex: 1 },
+  camera: { flex: 1, width: '100%', height: '100%' },
+  captureContainer: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    paddingBottom: moderateScale(20),
+  },
+  captureButton: {
+    height: moderateScale(60),
+    width: moderateScale(60),
+    backgroundColor: colors.white,
+    borderRadius: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  innerCircle: {
+    height: moderateScale(50),
+    width: moderateScale(50),
+    borderRadius: 50,
+    borderWidth: 2,
+    borderColor: colors.black,
+  },
+})
